@@ -8,6 +8,7 @@ use aes::{
     Aes128,
 };
 use base64::prelude::*;
+use clap::Parser;
 use elliptic_curve::JwkEcKey;
 use kbs_types::{Challenge, ProtectedHeader, Request, Response, TeePubKey};
 use lazy_static::lazy_static;
@@ -19,10 +20,31 @@ use uuid::Uuid;
 
 lazy_static! {
     pub static ref KEY: RwLock<Vec<(JwkEcKey, EphemeralSecret)>> = RwLock::new(Vec::new());
+    pub static ref MEASUREMENT: RwLock<Vec<u8>> = RwLock::new(Vec::new());
+}
+
+#[derive(Debug, Parser)]
+struct Args {
+    #[arg(long, short)]
+    pub measurement: Option<String>,
+}
+
+fn launch_measurement() -> Vec<u8> {
+    MEASUREMENT.read().unwrap().clone()
 }
 
 #[actix_web::main]
 async fn main() -> io::Result<()> {
+    let args = Args::parse();
+
+    if args.measurement.is_some() {
+        let measurement = args.measurement.clone().unwrap();
+
+        let mut bytes = BASE64_STANDARD.decode(measurement).unwrap();
+        let mut m = MEASUREMENT.write().unwrap();
+        m.append(&mut bytes);
+    }
+
     HttpServer::new(|| {
         App::new().service(
             web::scope("/kbs/v0")
