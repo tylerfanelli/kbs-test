@@ -21,16 +21,24 @@ use uuid::Uuid;
 lazy_static! {
     pub static ref KEY: RwLock<Vec<(JwkEcKey, EphemeralSecret)>> = RwLock::new(Vec::new());
     pub static ref MEASUREMENT: RwLock<Vec<u8>> = RwLock::new(Vec::new());
+    pub static ref SECRET: RwLock<Vec<u8>> = RwLock::new(Vec::new());
 }
 
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(long, short)]
     pub measurement: Option<String>,
+
+    #[arg(long, short)]
+    pub secret: Option<String>,
 }
 
 fn launch_measurement() -> Vec<u8> {
     MEASUREMENT.read().unwrap().clone()
+}
+
+fn secret() -> Vec<u8> {
+    SECRET.read().unwrap().clone()
 }
 
 #[actix_web::main]
@@ -43,6 +51,14 @@ async fn main() -> io::Result<()> {
         let mut bytes = BASE64_STANDARD.decode(measurement).unwrap();
         let mut m = MEASUREMENT.write().unwrap();
         m.append(&mut bytes);
+    }
+
+    if args.secret.is_some() {
+        let secret = args.secret.clone().unwrap();
+
+        let mut bytes = BASE64_STANDARD.decode(secret).unwrap();
+        let mut s = SECRET.write().unwrap();
+        s.append(&mut bytes);
     }
 
     HttpServer::new(|| {
