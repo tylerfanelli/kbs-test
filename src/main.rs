@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{cmp::min, collections::BTreeMap, io, sync::RwLock};
+use std::{
+    cmp::min,
+    collections::BTreeMap,
+    io,
+    sync::{Mutex, RwLock},
+};
 
 use actix_web::{cookie::Cookie, post, web, App, HttpRequest, HttpResponse, HttpServer};
 use aes::{
@@ -15,6 +20,7 @@ use lazy_static::lazy_static;
 use p384::{ecdh::EphemeralSecret, EncodedPoint, NistP384};
 use rand_core::OsRng;
 use serde_json::Value;
+use sev::firmware::guest::AttestationReport;
 use sha2::Sha256;
 use uuid::Uuid;
 
@@ -22,6 +28,7 @@ lazy_static! {
     pub static ref KEY: RwLock<Vec<(JwkEcKey, EphemeralSecret)>> = RwLock::new(Vec::new());
     pub static ref MEASUREMENT: RwLock<Vec<u8>> = RwLock::new(Vec::new());
     pub static ref SECRET: RwLock<Vec<u8>> = RwLock::new(Vec::new());
+    pub static ref ATTESTED: Mutex<bool> = Mutex::new(false);
 }
 
 #[derive(Debug, Parser)]
@@ -92,6 +99,19 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
     let _cookie = req.cookie("kbs-session-id").unwrap();
 
     let attest = attest.into_inner();
+
+    let serde_json::Value::String(tee_evidence) = attest.tee_evidence else {
+        panic!("evidence not a base64 string");
+    };
+
+    let evidence = BASE64_URL_SAFE.decode(&tee_evidence).unwrap();
+
+    let report: AttestationReport = serde_json::from_slice(&evidence).unwrap();
+
+    if report.measurement.as_ref() == launch_measurement() {
+        let mut val = ATTESTED.lock().unwrap();
+        *val = true;
+    }
 
     let ec = match attest.tee_pubkey {
         TeePubKey::EC {
