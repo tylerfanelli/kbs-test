@@ -111,6 +111,8 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
     if report.measurement.as_ref() == launch_measurement() {
         let mut val = ATTESTED.lock().unwrap();
         *val = true;
+    } else {
+        println!("\nlaunch measurement not as expected");
     }
 
     let ec = match attest.tee_pubkey {
@@ -151,6 +153,7 @@ pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> Http
 
     let attested = ATTESTED.lock().unwrap();
     if !*attested {
+        println!("client is unattested, not releasing secret");
         return HttpResponse::Forbidden().into();
     }
 
