@@ -106,7 +106,7 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
 
     let evidence = BASE64_URL_SAFE.decode(&tee_evidence).unwrap();
 
-    let report: AttestationReport = serde_json::from_slice(&evidence).unwrap();
+    let report: AttestationReport = unsafe { std::ptr::read(evidence.as_ptr() as *const _) };
 
     if report.measurement.as_ref() == launch_measurement() {
         let mut val = ATTESTED.lock().unwrap();
@@ -149,6 +149,11 @@ pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> Http
         panic!("invalid resource id");
     }
 
+    let attested = ATTESTED.lock().unwrap();
+    if !*attested {
+        return HttpResponse::Forbidden().into();
+    }
+
     let (jwk, private) = {
         let mut vec = KEY.write().unwrap();
         vec.pop().unwrap()
@@ -164,11 +169,9 @@ pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> Http
     hkdf.expand(&empty, &mut out).unwrap();
     let aes = Aes128::new_from_slice(&out).unwrap();
 
-    let plaintext = String::from("hello, SVSM! This message is from the attestation server");
-
     let mut bytes: Vec<u8> = Vec::new();
     let mut ptr = 0;
-    let pt_bytes = plaintext.as_bytes();
+    let pt_bytes = secret();
     let len = pt_bytes.len();
 
     while ptr < len {
