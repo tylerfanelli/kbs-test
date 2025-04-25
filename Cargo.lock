@@ -1575,9 +1575,9 @@ dependencies = [
 
 [[package]]
 name = "sev"
-version = "6.0.0"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20ac277517d8fffdf3c41096323ed705b3a7c75e397129c072fb448339839d0f"
+checksum = "b06afe5192a43814047ea0072f4935f830a1de3c8cb43b56c90ae6918468b94d"
 dependencies = [
  "base64",
  "bincode",
