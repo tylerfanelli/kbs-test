@@ -197,9 +197,20 @@ pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> Http
         other_fields: BTreeMap::new(),
     };
 
+    let ec = {
+        let public: p384::PublicKey = private.public_key();
+        let jwk = public.to_jwk();
+        let point = jwk.to_encoded_point::<NistP384>().unwrap();
+
+        serde_json::json!({
+            "x_b64url": BASE64_URL_SAFE.encode(point.x().unwrap()),
+            "y_b64url": BASE64_URL_SAFE.encode(point.y().unwrap())
+        })
+    };
+
     let resp = Response {
         protected,
-        encrypted_key: private.public_key().to_sec1_bytes().to_vec(),
+        encrypted_key: serde_json::to_vec(&ec).unwrap(),
         aad: None,
         iv: "".to_string().into(),
         ciphertext: bytes,
