@@ -112,7 +112,11 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
         let mut val = ATTESTED.lock().unwrap();
         *val = true;
     } else {
-        println!("\nlaunch measurement not as expected");
+        println!(
+            "\nlaunch measurement not as expected\nexpected:{:?}\nfound:{:?}",
+            BASE64_STANDARD.encode(launch_measurement()),
+            BASE64_STANDARD.encode(report.measurement.as_ref())
+        );
     }
 
     let ec = match attest.tee_pubkey {
