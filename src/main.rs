@@ -214,7 +214,7 @@ pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> Http
     )
     .unwrap();
 
-    let aes = Aes128::new_from_slice(&shared_secret).unwrap();
+    let aes = Aes128::new_from_slice(&shared_secret[..16]).unwrap();
 
     let mut bytes: Vec<u8> = Vec::new();
     let mut ptr = 0;
