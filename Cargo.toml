@@ -9,13 +9,22 @@ aes = "0.8.4"
 anyhow = "1.0.93"
 base64 = "0.22.1"
 clap = { version = "4.5.35", features = ["derive"] }
-elliptic-curve = { version = "0.13.8", features = ["jwk", "sec1"] }
+cocoon-tpm-crypto = { git = "https://github.com/nicstange/cocoon-tpm.git", default-features = false, features = [
+    "enable_arch_math_asm", "zeroize",
+    # Enable x86 rdseed based rng.
+    "enable_x86_64_rdseed",
+    # At least one of block cipher, mode and hash is needed,
+    # otherwise compilation will fail due to empty enums.
+    "aes", "cfb", "sha256", "sha384", "sha512",
+    "ecc", "ecdh", "ecdsa",
+    "ecc_nist_p224", "ecc_nist_p256",
+    "ecc_nist_p384", "ecc_nist_p521",
+]}
+cocoon-tpm-tpm2-interface = { git = "https://github.com/nicstange/cocoon-tpm.git", default-features = false }
+cocoon-tpm-utils-common = { git = "https://github.com/nicstange/cocoon-tpm.git", default-features = false }
 kbs-types = "0.9.3"
 lazy_static = "1.5.0"
-p384 = { version = "0.13.1", features = ["jwk"] }
-rand_core = "0.6.4"
 sec1 = "0.7.3"
 serde_json = "1.0.133"
 sev = "5.0.0"
-sha2 = "0.10.8"
 uuid = { version = "1.11.0", features = ["v4"] }

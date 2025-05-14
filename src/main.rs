@@ -14,18 +14,27 @@ use aes::{
 };
 use base64::prelude::*;
 use clap::Parser;
-use elliptic_curve::JwkEcKey;
+use cocoon_tpm_crypto::{
+    ecc::{curve::Curve, ecdh::ecdh_c_1e_1s_cdh_party_u_key_gen, EccKey},
+    rng::{self, HashDrbg, RngCore as _, X86RdSeedRng},
+    EmptyCryptoIoSlices,
+};
+use cocoon_tpm_tpm2_interface::{
+    self as tpm2_interface, Tpm2bEccParameter, TpmBuffer, TpmEccCurve, TpmiAlgHash, TpmsEccPoint,
+};
+use cocoon_tpm_utils_common::{
+    alloc::try_alloc_zeroizing_vec,
+    io_slices::{self, IoSlicesIterCommon as _},
+};
 use kbs_types::{Challenge, ProtectedHeader, Request, Response, TeePubKey};
 use lazy_static::lazy_static;
-use p384::{ecdh::EphemeralSecret, EncodedPoint, NistP384};
-use rand_core::OsRng;
 use serde_json::Value;
 use sev::firmware::guest::AttestationReport;
-use sha2::Sha256;
 use uuid::Uuid;
 
 lazy_static! {
-    pub static ref KEY: RwLock<Vec<(JwkEcKey, EphemeralSecret)>> = RwLock::new(Vec::new());
+    pub static ref KEY: RwLock<Vec<(EccKey, TpmsEccPoint<'static>, Curve, rng::HashDrbg)>> =
+        RwLock::new(Vec::new());
     pub static ref MEASUREMENT: RwLock<Vec<u8>> = RwLock::new(Vec::new());
     pub static ref SECRET: RwLock<Vec<u8>> = RwLock::new(Vec::new());
     pub static ref ATTESTED: Mutex<bool> = Mutex::new(false);
@@ -126,18 +135,47 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
             x,
             y,
         } => {
+            let curve = Curve::new(TpmEccCurve::NistP384).unwrap();
+
             let x = BASE64_URL_SAFE.decode(x).unwrap();
             let y = BASE64_URL_SAFE.decode(y).unwrap();
 
-            let epoint = EncodedPoint::from_affine_coordinates(
-                x.as_slice().into(),
-                y.as_slice().into(),
-                false,
-            );
-            let jwk = JwkEcKey::from_encoded_point::<NistP384>(&epoint).unwrap();
-            let private = EphemeralSecret::random(&mut OsRng);
+            let point = TpmsEccPoint {
+                x: Tpm2bEccParameter {
+                    buffer: TpmBuffer::Owned(x),
+                },
+                y: Tpm2bEccParameter {
+                    buffer: TpmBuffer::Owned(y),
+                },
+            };
+            let mut rng = {
+                let mut rdseed = X86RdSeedRng::instantiate().unwrap();
+                let mut hash_drbg_entropy =
+                    try_alloc_zeroizing_vec(HashDrbg::min_seed_entropy_len(TpmiAlgHash::Sha256))
+                        .unwrap();
 
-            (jwk, private)
+                rdseed
+                    .generate::<_, EmptyCryptoIoSlices>(
+                        io_slices::SingletonIoSliceMut::new(hash_drbg_entropy.as_mut_slice())
+                            .map_infallible_err(),
+                        None,
+                    )
+                    .unwrap();
+
+                rng::HashDrbg::instantiate(
+                    tpm2_interface::TpmiAlgHash::Sha256,
+                    &hash_drbg_entropy,
+                    None,
+                    Some(b"SVSM attestation RNG"),
+                )
+            }
+            .unwrap();
+
+            let curve_ops = curve.curve_ops().unwrap();
+
+            let ecc = EccKey::generate(&curve_ops, &mut rng, None).unwrap();
+
+            (ecc, point, curve, rng)
         }
         _ => panic!("invalid RSA key"),
     };
@@ -161,20 +199,22 @@ pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> Http
         return HttpResponse::Forbidden().into();
     }
 
-    let (jwk, private) = {
+    let (_, public, _curve, mut rng) = {
         let mut vec = KEY.write().unwrap();
         vec.pop().unwrap()
     };
 
-    let public = jwk.to_public_key().unwrap();
-    let shared = private.diffie_hellman(&public);
-    let hkdf = shared.extract::<Sha256>(None);
+    let (shared_secret, pub_key_u_plain) = ecdh_c_1e_1s_cdh_party_u_key_gen(
+        TpmiAlgHash::Sha256,
+        "TEST",
+        TpmEccCurve::NistP384,
+        &public,
+        &mut rng,
+        None,
+    )
+    .unwrap();
 
-    let mut out = [0u8; 16];
-    let empty: [u8; 0] = [];
-
-    hkdf.expand(&empty, &mut out).unwrap();
-    let aes = Aes128::new_from_slice(&out).unwrap();
+    let aes = Aes128::new_from_slice(&shared_secret).unwrap();
 
     let mut bytes: Vec<u8> = Vec::new();
     let mut ptr = 0;
@@ -197,16 +237,10 @@ pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> Http
         other_fields: BTreeMap::new(),
     };
 
-    let ec = {
-        let public: p384::PublicKey = private.public_key();
-        let jwk = public.to_jwk();
-        let point = jwk.to_encoded_point::<NistP384>().unwrap();
-
-        serde_json::json!({
-            "x_b64url": BASE64_URL_SAFE.encode(point.x().unwrap()),
-            "y_b64url": BASE64_URL_SAFE.encode(point.y().unwrap())
-        })
-    };
+    let ec = serde_json::json!({
+        "x_b64url": BASE64_URL_SAFE.encode(&*pub_key_u_plain.x.buffer),
+        "y_b64url": BASE64_URL_SAFE.encode(&*pub_key_u_plain.y.buffer),
+    });
 
     let resp = Response {
         protected,
