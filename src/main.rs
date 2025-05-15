@@ -10,7 +10,7 @@ use std::{
 use actix_web::{cookie::Cookie, post, web, App, HttpRequest, HttpResponse, HttpServer};
 use aes::{
     cipher::{BlockEncrypt, KeyInit},
-    Aes128,
+    Aes256,
 };
 use base64::prelude::*;
 use clap::Parser;
@@ -214,7 +214,7 @@ pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> Http
     )
     .unwrap();
 
-    let aes = Aes128::new_from_slice(&shared_secret[..16]).unwrap();
+    let aes = Aes256::new_from_slice(&shared_secret[..]).unwrap();
 
     let mut bytes: Vec<u8> = Vec::new();
     let mut ptr = 0;
