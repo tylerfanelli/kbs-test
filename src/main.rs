@@ -206,7 +206,7 @@ pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> Http
 
     let (shared_secret, pub_key_u_plain) = ecdh_c_1e_1s_cdh_party_u_key_gen(
         TpmiAlgHash::Sha256,
-        "TEST",
+        "",
         TpmEccCurve::NistP384,
         &public,
         &mut rng,
