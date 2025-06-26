@@ -135,7 +135,7 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
             x,
             y,
         } => {
-            let curve = Curve::new(TpmEccCurve::NistP384).unwrap();
+            let curve = Curve::new(TpmEccCurve::NistP521).unwrap();
 
             let x = BASE64_URL_SAFE.decode(x).unwrap();
             let y = BASE64_URL_SAFE.decode(y).unwrap();
@@ -207,7 +207,7 @@ pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> Http
     let (shared_secret, pub_key_u_plain) = ecdh_c_1e_1s_cdh_party_u_key_gen(
         TpmiAlgHash::Sha256,
         "",
-        TpmEccCurve::NistP384,
+        TpmEccCurve::NistP521,
         &public,
         &mut rng,
         None,
@@ -232,7 +232,7 @@ pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> Http
     }
 
     let protected = ProtectedHeader {
-        alg: "ECDHP384".to_string(),
+        alg: "ECDHP521".to_string(),
         enc: "AES128".to_string(),
         other_fields: BTreeMap::new(),
     };
