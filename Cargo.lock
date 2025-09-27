@@ -1281,6 +1281,7 @@ dependencies = [
  "base64",
  "clap",
  "concat-kdf",
+ "hex",
  "kbs-types",
  "lazy_static",
  "p256",

@@ -53,7 +53,7 @@ async fn main() -> io::Result<()> {
     if args.measurement.is_some() {
         let measurement = args.measurement.clone().unwrap();
 
-        let mut bytes = BASE64_STANDARD.decode(measurement).unwrap();
+        let mut bytes = hex::decode(measurement).unwrap();
         let mut m = MEASUREMENT.write().unwrap();
         m.append(&mut bytes);
     }
@@ -109,8 +109,8 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
     } else {
         println!(
             "\nlaunch measurement not as expected\nexpected:{:?}\nfound:{:?}",
-            BASE64_STANDARD.encode(launch_measurement()),
-            BASE64_STANDARD.encode(report.measurement.as_ref())
+            hex::encode(launch_measurement()),
+            hex::encode(report.measurement.as_ref())
         );
 
         return HttpResponse::ExpectationFailed().into();
