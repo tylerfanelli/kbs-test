@@ -1,42 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
-    cmp::min,
-    collections::BTreeMap,
     io,
     sync::{Mutex, RwLock},
 };
 
-use actix_web::{cookie::Cookie, post, web, App, HttpRequest, HttpResponse, HttpServer};
-use aes::{
-    cipher::{BlockEncrypt, KeyInit},
-    Aes256,
+use actix_web::{cookie::Cookie, get, post, web, App, HttpRequest, HttpResponse, HttpServer};
+use aes::cipher::KeyInit;
+use aes_gcm::{
+    aead::{generic_array::GenericArray, AeadMutInPlace},
+    Aes256Gcm, Nonce,
 };
-use base64::prelude::*;
+use aes_kw::{Kek, KekAes256};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, prelude::BASE64_STANDARD, Engine};
 use clap::Parser;
-use cocoon_tpm_crypto::{
-    ecc::{curve::Curve, ecdh::ecdh_c_1e_1s_cdh_party_u_key_gen, EccKey},
-    rng::{self, HashDrbg, RngCore as _, X86RdSeedRng},
-    EmptyCryptoIoSlices,
-};
-use cocoon_tpm_tpm2_interface::{
-    self as tpm2_interface, Tpm2bEccParameter, TpmBuffer, TpmEccCurve, TpmiAlgHash, TpmsEccPoint,
-};
-use cocoon_tpm_utils_common::{
-    alloc::try_alloc_zeroizing_vec,
-    io_slices::{self, IoSlicesIterCommon as _},
-};
 use kbs_types::{Challenge, ProtectedHeader, Request, Response, TeePubKey};
 use lazy_static::lazy_static;
-use serde_json::Value;
+use p256::{
+    ecdh::EphemeralSecret, elliptic_curve::sec1::FromEncodedPoint, EncodedPoint, PublicKey,
+};
+use rand::Rng;
+use serde_json::{json, Value};
 use sev::firmware::guest::AttestationReport;
 use uuid::Uuid;
 
+const AES_GCM_256_ALGORITHM: &str = "A256GCM";
+const AES_GCM_256_KEY_BITS: u32 = 256;
+const ECDH_ES_A256KW: &str = "ECDH-ES+A256KW";
+const P256_CURVE: &str = "P-256";
+const EC_KTY: &str = "EC";
+
 lazy_static! {
-    pub static ref KEY: RwLock<Vec<(EccKey, TpmsEccPoint<'static>, Curve, rng::HashDrbg)>> =
-        RwLock::new(Vec::new());
+    pub static ref KEY: RwLock<Vec<(String, String)>> = RwLock::new(Vec::new());
     pub static ref MEASUREMENT: RwLock<Vec<u8>> = RwLock::new(Vec::new());
-    pub static ref SECRET: RwLock<Vec<u8>> = RwLock::new(Vec::new());
     pub static ref ATTESTED: Mutex<bool> = Mutex::new(false);
 }
 
@@ -76,8 +72,13 @@ async fn main() -> io::Result<()> {
 }
 
 #[post("/auth")]
-pub async fn auth(_req: web::Json<Request>) -> HttpResponse {
+pub async fn auth(req: web::Json<Request>) -> HttpResponse {
     let cookie = Cookie::build("kbs-session-id", Uuid::new_v4().to_string()).finish();
+
+    let req = req.into_inner();
+    if req.version != "0.4.0" {
+        return HttpResponse::ExpectationFailed().into();
+    }
 
     let c = Challenge {
         nonce: BASE64_STANDARD.encode(Uuid::new_v4().as_bytes()),
@@ -94,11 +95,11 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
 
     let attest = attest.into_inner();
 
-    let serde_json::Value::String(tee_evidence) = attest.tee_evidence else {
+    let serde_json::Value::String(tee_evidence) = attest.tee_evidence.primary_evidence else {
         panic!("evidence not a base64 string");
     };
 
-    let evidence = BASE64_URL_SAFE.decode(&tee_evidence).unwrap();
+    let evidence = BASE64_STANDARD.decode(&tee_evidence).unwrap();
 
     let report: AttestationReport = unsafe { std::ptr::read(evidence.as_ptr() as *const _) };
 
@@ -111,129 +112,117 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
             BASE64_STANDARD.encode(launch_measurement()),
             BASE64_STANDARD.encode(report.measurement.as_ref())
         );
+
+        return HttpResponse::ExpectationFailed().into();
     }
 
-    let ec = match attest.tee_pubkey {
-        TeePubKey::EC {
-            crv: _,
-            alg: _,
-            x,
-            y,
-        } => {
-            let curve = Curve::new(TpmEccCurve::NistP521).unwrap();
-
-            let x = BASE64_URL_SAFE.decode(x).unwrap();
-            let y = BASE64_URL_SAFE.decode(y).unwrap();
-
-            let point = TpmsEccPoint {
-                x: Tpm2bEccParameter {
-                    buffer: TpmBuffer::Owned(x),
-                },
-                y: Tpm2bEccParameter {
-                    buffer: TpmBuffer::Owned(y),
-                },
-            };
-            let mut rng = {
-                let mut rdseed = X86RdSeedRng::instantiate().unwrap();
-                let mut hash_drbg_entropy =
-                    try_alloc_zeroizing_vec(HashDrbg::min_seed_entropy_len(TpmiAlgHash::Sha256))
-                        .unwrap();
-
-                rdseed
-                    .generate::<_, EmptyCryptoIoSlices>(
-                        io_slices::SingletonIoSliceMut::new(hash_drbg_entropy.as_mut_slice())
-                            .map_infallible_err(),
-                        None,
-                    )
-                    .unwrap();
-
-                rng::HashDrbg::instantiate(
-                    tpm2_interface::TpmiAlgHash::Sha256,
-                    &hash_drbg_entropy,
-                    None,
-                    Some(b"SVSM attestation RNG"),
-                )
-            }
-            .unwrap();
-
-            let curve_ops = curve.curve_ops().unwrap();
-
-            let ecc = EccKey::generate(&curve_ops, &mut rng, None).unwrap();
-
-            (ecc, point, curve, rng)
-        }
-        _ => panic!("invalid RSA key"),
+    let tee_pubkey = attest.runtime_data.tee_pubkey;
+    let TeePubKey::EC {
+        crv: _,
+        alg: _,
+        x,
+        y,
+    } = tee_pubkey
+    else {
+        return HttpResponse::ExpectationFailed().into();
     };
 
     let mut key = KEY.write().unwrap();
-    key.push(ec);
+
+    key.push((x, y));
 
     HttpResponse::Ok().into()
 }
 
-#[post("/{resouce_id}")]
-pub async fn resource(_req: HttpRequest, resource_id: web::Path<String>) -> HttpResponse {
-    let id = resource_id.into_inner();
-    if id != "svsm_secret" {
-        panic!("invalid resource id");
-    }
-
+#[get("/resource/default/sample/test")]
+pub async fn resource(_req: HttpRequest) -> HttpResponse {
     let attested = ATTESTED.lock().unwrap();
     if !*attested {
         println!("client is unattested, not releasing secret");
-        return HttpResponse::Forbidden().into();
+        return HttpResponse::ExpectationFailed().into();
     }
 
-    let (_, public, _curve, mut rng) = {
-        let mut vec = KEY.write().unwrap();
-        vec.pop().unwrap()
-    };
+    let mut payload = "attestation successful".as_bytes().to_vec();
 
-    let (shared_secret, pub_key_u_plain) = ecdh_c_1e_1s_cdh_party_u_key_gen(
-        TpmiAlgHash::Sha256,
-        "",
-        TpmEccCurve::NistP521,
-        &public,
-        &mut rng,
-        None,
-    )
-    .unwrap();
+    let mut rng = rand::thread_rng();
 
-    let aes = Aes256::new_from_slice(&shared_secret[..]).unwrap();
+    // 1. Generate a random CEK
+    let cek = Aes256Gcm::generate_key(&mut rng);
 
-    let mut bytes: Vec<u8> = Vec::new();
-    let mut ptr = 0;
-    let pt_bytes = "attestation successful!".as_bytes();
-    let len = pt_bytes.len();
+    let mut key = KEY.write().unwrap();
 
-    while ptr < len {
-        let mut enc = [0u8; 16];
-        let remain = min(16, len - ptr);
-        enc[..remain].copy_from_slice(&pt_bytes[ptr..ptr + remain]);
+    let (x, y) = key.pop().unwrap();
 
-        aes.encrypt_block((&mut enc).into());
-        bytes.append(&mut enc.to_vec());
-        ptr += 16;
-    }
+    let x: [u8; 32] = URL_SAFE_NO_PAD.decode(x).unwrap().try_into().unwrap();
+    let y: [u8; 32] = URL_SAFE_NO_PAD.decode(y).unwrap().try_into().unwrap();
+    let client_point = EncodedPoint::from_affine_coordinates(
+        &GenericArray::from(x),
+        &GenericArray::from(y),
+        false,
+    );
+    let public_key = PublicKey::from_encoded_point(&client_point)
+        .into_option()
+        .unwrap();
+    let encrypter_secret = EphemeralSecret::random(&mut rng);
+    let z = encrypter_secret
+        .diffie_hellman(&public_key)
+        .raw_secret_bytes()
+        .to_vec();
+    let mut key_derivation_materials = Vec::new();
+    key_derivation_materials.extend_from_slice(&(ECDH_ES_A256KW.len() as u32).to_be_bytes());
+    key_derivation_materials.extend_from_slice(ECDH_ES_A256KW.as_bytes());
+    key_derivation_materials.extend_from_slice(&(0_u32).to_be_bytes());
+    key_derivation_materials.extend_from_slice(&(0_u32).to_be_bytes());
+    key_derivation_materials.extend_from_slice(&AES_GCM_256_KEY_BITS.to_be_bytes());
+    let mut wrapping_key = vec![0; 32];
+    concat_kdf::derive_key_into::<sha2::Sha256>(&z, &key_derivation_materials, &mut wrapping_key)
+        .unwrap();
+    let wrapping_key: [u8; 32] = wrapping_key.try_into().unwrap();
+    let wrapping_key: KekAes256 = Kek::new(&GenericArray::from(wrapping_key));
+    let mut encrypted_key = vec![0; 40];
+    encrypted_key.resize(40, 0);
+    let cek = cek.to_vec();
+    wrapping_key.wrap(&cek, &mut encrypted_key).unwrap();
 
+    let point = EncodedPoint::from(encrypter_secret.public_key());
+    let epk_x = point.x().unwrap();
+    let epk_y = point.y().unwrap();
+    let epk_x = URL_SAFE_NO_PAD.encode(epk_x);
+    let epk_y = URL_SAFE_NO_PAD.encode(epk_y);
     let protected = ProtectedHeader {
-        alg: "ECDHP521".to_string(),
-        enc: "AES128".to_string(),
-        other_fields: BTreeMap::new(),
+        alg: ECDH_ES_A256KW.to_string(),
+        enc: AES_GCM_256_ALGORITHM.to_string(),
+        other_fields: json!({
+            "epk": {
+                "crv": P256_CURVE,
+                "kty": EC_KTY,
+                "x": epk_x,
+                "y": epk_y
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
     };
 
-    let ec = serde_json::json!({
-        "x_b64url": BASE64_URL_SAFE.encode(&*pub_key_u_plain.x.buffer),
-        "y_b64url": BASE64_URL_SAFE.encode(&*pub_key_u_plain.y.buffer),
-    });
+    // 3. Encrypt content with CEK
+    let mut cek_cipher = Aes256Gcm::new(GenericArray::from_slice(&cek));
+
+    let iv = rand::thread_rng().gen::<[u8; 12]>();
+    let nonce = Nonce::from_slice(&iv);
+    let aad = protected.generate_aad().unwrap();
+
+    let tag = cek_cipher
+        .encrypt_in_place_detached(nonce, &aad, &mut payload)
+        .unwrap();
 
     let resp = Response {
         protected,
-        encrypted_key: serde_json::to_vec(&ec).unwrap(),
+        encrypted_key,
+        iv: iv.into(),
+        ciphertext: payload,
         aad: None,
-        iv: "".to_string().into(),
-        ciphertext: bytes,
-        tag: "".to_string().into(),
+        tag: tag.to_vec(),
     };
 
     HttpResponse::Ok().json(resp)
