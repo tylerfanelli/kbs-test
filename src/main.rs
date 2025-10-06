@@ -142,7 +142,11 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
 
     key.push((x, y));
 
-    HttpResponse::Ok().into()
+    let json = json!({
+        "token": "test-token".to_string(),
+    });
+
+    HttpResponse::Ok().json(json)
 }
 
 #[get("/resource/default/sample/test")]
