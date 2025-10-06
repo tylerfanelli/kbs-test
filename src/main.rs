@@ -95,11 +95,22 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
 
     let attest = attest.into_inner();
 
-    let serde_json::Value::String(tee_evidence) = attest.tee_evidence.primary_evidence else {
+    let serde_json::Value::Object(tee_evidence) = attest.tee_evidence.primary_evidence else {
         panic!("evidence not a base64 string");
     };
 
-    let evidence = BASE64_STANDARD.decode(&tee_evidence).unwrap();
+    let evidence = {
+        let snp = tee_evidence.get("Snp").unwrap();
+        let Value::Object(snp) = snp else {
+            panic!("SNP evidence not an object");
+        };
+        let encoded = snp.get("report").unwrap();
+        let Value::String(s) = encoded else {
+            panic!("report not a base64 string");
+        };
+
+        BASE64_STANDARD.decode(s).unwrap()
+    };
 
     let report: AttestationReport = unsafe { std::ptr::read(evidence.as_ptr() as *const _) };
 
