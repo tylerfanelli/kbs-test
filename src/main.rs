@@ -100,13 +100,10 @@ pub async fn attest(req: HttpRequest, attest: web::Json<kbs_types::Attestation>)
     };
 
     let evidence = {
-        let snp = tee_evidence.get("Snp").unwrap();
-        let Value::Object(snp) = snp else {
-            panic!("SNP evidence not an object");
-        };
-        let encoded = snp.get("report").unwrap();
-        let Value::String(s) = encoded else {
-            panic!("report not a base64 string");
+        let report = tee_evidence.get("snp-report").unwrap();
+
+        let Value::String(s) = report else {
+            panic!("SNP attestation report is not represented as a base64-encoded JSON string");
         };
 
         BASE64_STANDARD.decode(s).unwrap()
