@@ -16,7 +16,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, prelude::BASE64_STANDARD,
 use clap::Parser;
 use kbs_types::{Challenge, ProtectedHeader, Request, Response, TeePubKey};
 use lazy_static::lazy_static;
-use p256::{
+use p521::{
     ecdh::EphemeralSecret, elliptic_curve::sec1::FromEncodedPoint, EncodedPoint, PublicKey,
 };
 use rand::Rng;
@@ -27,7 +27,7 @@ use uuid::Uuid;
 const AES_GCM_256_ALGORITHM: &str = "A256GCM";
 const AES_GCM_256_KEY_BITS: u32 = 256;
 const ECDH_ES_A256KW: &str = "ECDH-ES+A256KW";
-const P256_CURVE: &str = "P-256";
+const P521_CURVE: &str = "P-521";
 const EC_KTY: &str = "EC";
 
 lazy_static! {
@@ -180,11 +180,11 @@ pub async fn resource(_req: HttpRequest) -> HttpResponse {
 
     let (x, y) = key.pop().unwrap();
 
-    let x: [u8; 32] = URL_SAFE_NO_PAD.decode(x).unwrap().try_into().unwrap();
-    let y: [u8; 32] = URL_SAFE_NO_PAD.decode(y).unwrap().try_into().unwrap();
+    let x: [u8; 66] = URL_SAFE_NO_PAD.decode(x).unwrap().try_into().unwrap();
+    let y: [u8; 66] = URL_SAFE_NO_PAD.decode(y).unwrap().try_into().unwrap();
     let client_point = EncodedPoint::from_affine_coordinates(
-        &GenericArray::from(x),
-        &GenericArray::from(y),
+        GenericArray::from_slice(&x),
+        GenericArray::from_slice(&y),
         false,
     );
     let public_key = PublicKey::from_encoded_point(&client_point)
@@ -221,7 +221,7 @@ pub async fn resource(_req: HttpRequest) -> HttpResponse {
         enc: AES_GCM_256_ALGORITHM.to_string(),
         other_fields: json!({
             "epk": {
-                "crv": P256_CURVE,
+                "crv": P521_CURVE,
                 "kty": EC_KTY,
                 "x": epk_x,
                 "y": epk_y
